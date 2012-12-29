@@ -4,6 +4,9 @@ import locale, codecs
 import os, sys
 import re
 import serial
+import subprocess
+import threading
+import time
 
 if sys.platform == 'win32':
 	import _winreg
@@ -229,6 +232,9 @@ def isPortAvailable(port):
 def openSketch(sketch_folder):
 	file_name = os.path.split(sketch_folder)[1] + '.ino'
 	sketch_file_path = os.path.join(sketch_folder, file_name)
+	if not os.path.isfile(sketch_file_path):
+		file_name = os.path.split(sketch_folder)[1] + '.pde'
+		sketch_file_path = os.path.join(sketch_folder, file_name)
 	sublime.run_command('new_window')
 	new_window = sublime.windows()[-1]
 	view = new_window.open_file(sketch_file_path)
@@ -259,31 +265,152 @@ def regFilename(filename):
 		filename = filename.replace(' ', '_')
 	return filename
 
+def isMainSrc(filename):
+	state = False
+	has_setup = False
+	has_loop = False
+	text = genSimpleSrcFile(filename)
+	function_list = genFunctionList(text)
+	for function in function_list:
+		if 'setup' in function:
+			has_setup = True
+		if 'loop' in function:
+			has_loop = True
+	if has_setup and has_loop:
+		state = True
+	return state
+
 def isSketch(filename):
 	state = False
 	if filename:
 		path = os.path.split(filename)[0]
 		if not 'examples' in path:
 			ext = os.path.splitext(filename)[1]
-			if ext == '.ino':
+			if ext == '.ino' or ext == '.pde':
 				state = True
+			else:
+				state = isMainSrc(filename)
 	return state
 
 def openUrl(url):
 	Setting = sublime.load_settings('Stino.sublime-settings')
 	arduino_root = Setting.get('Arduino_root')
+	if sys.platform == 'darwin':
+		arduino_root = os.path.join(arduino_root, 'Contents/Resources/JAVA')
 	reference_dir = os.path.join(arduino_root, 'reference')
 	reference_dir = reference_dir.replace(os.path.sep, '/')
 	ref_file = '%s/%s.html' % (reference_dir, url)
 	sublime.run_command('open_url', {'url': ref_file})
 
+def formatNumber(number):
+	number_str = number[::-1]
+	seq = 0
+	new_number = ''
+	for digit in number_str:
+		if seq > 0:
+			if seq % 3 == 0:
+				new_number = ',' + new_number
+		new_number = digit + new_number
+		seq += 1
+	return new_number
+
+class runCompile:
+	def __init__(self, window, regex, upload_maximum_size, uploader):
+		self.window = window
+		self.panel = self.window.get_output_panel('arduino_panel')
+		self.Settings = sublime.load_settings('Stino.sublime-settings')
+		self.output_text = ''
+		self.show_text = ''
+		self.done_text = '[Arduino - Make process has completed.]'
+		self.pattern = re.compile(regex)
+		self.upload_maximum_size = formatNumber(upload_maximum_size)
+		self.size_line = ''
+		self.uploader = uploader
+		if sys.platform == 'win32':
+			self.uploader += '.exe'
+		self.uploader += ':'
+
+	def run(self):
+		thread_compile = threading.Thread(target=self.compile)
+		thread_display = threading.Thread(target=self.display)
+		thread_compile.start()
+		thread_display.start()
+
+	def compile(self):
+		encoding = codecs.lookup(locale.getpreferredencoding()).name
+		if sys.platform == 'win32':
+			cmd = 'build.bat'
+		else:
+			cmd = './build.sh'
+		self.process = subprocess.Popen(cmd, stdout = subprocess.PIPE, stderr = subprocess.STDOUT, bufsize = 1, shell = True)
+		while self.process.poll() == None:
+			line = self.process.stdout.readline()
+			if line.strip():
+				text = line.decode(encoding, 'replace')
+				self.output_text += text
+		self.output_text += self.done_text
+
+	def display(self):
+		while True:
+			last_line = self.show_text.split('\n')[-1]
+			if last_line == self.done_text:
+				break
+			self.show_text = self.output_text
+			if self.show_text:
+				self.output_text = self.output_text.replace(self.show_text, '')
+				sublime.set_timeout(self.update, 0)
+			time.sleep(0.1)
+		print self.error_text
+
+	def update(self):
+		edit = self.panel.begin_edit()
+		lines = self.show_text.split('\n')
+		for line in lines:
+			verbose_compilation = self.Settings.get('verbose_compilation')
+			show_output = False
+			line = line.strip()
+			if line:
+				if '...' in line or 'warning:' in line or 'error:' in line or 'No device' in line \
+					or 'make:' in line or self.uploader in line or ': In ' in line:
+					show_output = True
+				elif self.done_text in line:
+					line = self.size_line + line
+					show_output = True
+				else:
+					if verbose_compilation:
+						show_output = True
+				match = self.pattern.search(line)
+				if match:
+					size_info = match.group()
+					words = size_info.split(' ')
+					words = [word for word in words if word]
+					size = formatNumber(words[1])
+					self.size_line = 'Binary sketch size: %s bytes (of a %s byte maximum)\n' % (size, self.upload_maximum_size)
+				if show_output:
+					line += '\n'
+					self.panel.insert(edit, self.panel.size(), line)
+		self.panel.end_edit(edit)
+		self.panel.show(self.panel.size())
+		self.window.run_command("show_panel", {"panel": "output.arduino_panel"})
+
 def runBuild(window, arduino_info, cur_lang, mode = 'build'):
 	window.active_view().run_command('save')
 	prj_file = window.active_view().file_name()
 	createBuildFile(prj_file)
-	genBuildFiles(prj_file, arduino_info, cur_lang, mode)
-	window.run_command('set_build_system', {'file': ""})
-	window.run_command('build')
+	(main_src_number, prj_path, regex, upload_maximum_size, uploader) = genBuildFiles(prj_file, arduino_info, cur_lang, mode)
+	if main_src_number == 1:
+		os.chdir(prj_path)
+		compilation = runCompile(window, regex, upload_maximum_size, uploader)
+		compilation.run()
+		state = True
+	else:
+		if main_src_number == 0:
+			msg = 'Error: No main sketch file was found!'
+		else:
+			msg = 'Error: More than one main sketch file were found!'
+		sublime.message_dialog(msg)
+		state = False
+	return state
 
 def createBuildFile(prj_file):
 	working_dir = os.path.split(prj_file)[0]
@@ -302,27 +429,51 @@ def createBuildFile(prj_file):
 def getBoardBlock(board_file_path, board, has_processor, processor):
 	board_block = []
 	board_blocks = readFile(board_file_path, mode = 'blocks')
-	for block in board_blocks:
-		line = block[0]
-		(key, value) = getKeyValue(line)
-		if value == board:
-			board_block = block
-			break
-
-	if has_processor:
-		processor_blocks = getBlocks(board_block, '## ')
-		for block in processor_blocks:
+	text = readFile(board_file_path)
+	if '.container=' in text:
+		is_selected = False
+		for block in board_blocks:
+			cur_cpu = ''
+			for line in block:
+				if '.name=' in line:
+					(key, cur_board) = getKeyValue(line)
+				if '.container=' in line:
+					(key, cur_board) = getKeyValue(line)
+					has_processor = True
+					break
+				if '.cpu=' in line:
+					(key, cur_cpu) = getKeyValue(line)
+			if cur_board == board:
+				if has_processor:
+					if cur_cpu == processor:
+						is_selected = True
+				else:
+					is_selected = True
+			if is_selected:
+				board_block = block
+				break
+	else:
+		for block in board_blocks:
 			line = block[0]
 			(key, value) = getKeyValue(line)
-			if value == processor:
-				processor_block = block
+			if value == board:
+				board_block = block
 				break
-		block = []
-		for line in board_block[1:]:
-			if '## ' in line:
-				break
-			block.append(line)
-		board_block = block + processor_block[1:]
+
+		if has_processor:
+			processor_blocks = getBlocks(board_block, '## ')
+			for block in processor_blocks:
+				line = block[0]
+				(key, value) = getKeyValue(line)
+				if value == processor:
+					processor_block = block
+					break
+			block = []
+			for line in board_block[1:]:
+				if '## ' in line:
+					break
+				block.append(line)
+			board_block = block + processor_block[1:]
 	return board_block
 
 def getProgrammerBlock(arduino_info, programmer):
@@ -448,7 +599,11 @@ def strInfoDict(compile_info, dict_key_list):
 
 def findSrcFiles(ext_list, path, is_sketch = False):
 	file_list = []
+	build_path = os.path.join(path, 'build')
 	for (cur_path, sub_dirs, files) in os.walk(path):
+		if is_sketch:
+			if build_path in cur_path:
+				continue
 		for f in files:
 			cur_ext = os.path.splitext(f)[1]
 			if cur_ext in ext_list:
@@ -491,6 +646,7 @@ def genSimpleSrcFile(prj_file):
 	lines = readFile(prj_file, mode = 'lines')
 	level = 0
 	for line in lines:
+		line = line.strip()
 		s = '{'
 		if s in line:
 			if level == 0:
@@ -506,8 +662,12 @@ def genSimpleSrcFile(prj_file):
 				text += '}\n'
 		if not ('{' in line or '}' in line):
 			if level == 0:
-				text += line
-				text += '\n'
+				if line:
+					line = line.replace(';', ';\n')
+					text += line
+					text += ' '
+					if '#' in line:
+						text += '\n'
 	return text
 
 def regFunction(function):
@@ -516,10 +676,12 @@ def regFunction(function):
 	return function
 
 def genFunctionList(text):
+	text = '\n' + text
 	pattern = re.compile(r'\S+?\s+?\S+?\s*?\([\S\s]*?\)')
-	match = pattern.search(text, re.M)
+	match = pattern.search(text)
+	function_list = []
 	if match:
-		function_list = pattern.findall(text, re.M)
+		function_list = pattern.findall(text)
 	return function_list
 
 def isMainFunction(function):
@@ -562,13 +724,17 @@ def getFirstInclude(prj_file):
 		first_include_text = match.group()
 	return first_include_text
 
-def genMainFile(prj_file, main_file_path):
+def genMainFile(prj_file, main_file_path, arduino_info):
 	text = genSimpleSrcFile(prj_file)
 	function_list = genFunctionList(text)
 	declaration_text = genDeclaration(function_list)
 	main_text = readFile(prj_file)
 	first_include_text = getFirstInclude(prj_file)
-	inc_text = '#include <Arduino.h>\n'
+	version = arduino_info.getVersion()
+	if version >= 100:
+		inc_text = '#include <Arduino.h>\n'
+	else:
+		inc_text = '#include <WProgram.h>\n'
 	if first_include_text:
 		text = inc_text + first_include_text
 		main_text = main_text.replace(first_include_text, text)
@@ -583,6 +749,8 @@ def genMainFile(prj_file, main_file_path):
 def genScriptFile(prj_folder, path_list, mode):
 	Setting = sublime.load_settings('Stino.sublime-settings')
 	arduino_root = Setting.get('Arduino_root')
+	if sys.platform == 'darwin':
+		arduino_root = os.path.join(arduino_root, 'Contents/Resources/JAVA')
 	hardware_dir = os.path.join(arduino_root, 'hardware')
 	tools_dir = os.path.join(hardware_dir, 'tools')
 	arv_dir = os.path.join(tools_dir, 'avr')
@@ -625,17 +793,84 @@ def genScriptFile(prj_folder, path_list, mode):
 		cmd = 'chmod +x %s' % file_path
 		os.popen(cmd)
 
+def findMainSketchPath(filename):
+	org_file_folder = os.path.split(filename)[0]
+	if isMainSrc(filename):
+		main_sketch_path = org_file_folder
+	else:
+		has_main_sketch = False
+		cur_path = filename
+		while not has_main_sketch:
+			cur_path = os.path.split(cur_path)[0]
+			if not os.path.sep in cur_path:
+				break
+			file_list = listDir(cur_path)
+			for f in file_list:
+				f_path = os.path.join(cur_path, f)
+				if os.path.isfile(f_path):
+					if isMainSrc(f_path):
+						has_main_sketch = True
+						break
+		if has_main_sketch:
+			main_sketch_path = cur_path
+		else:
+			main_sketch_path = org_file_folder
+	return main_sketch_path
+
+def getSketchPath(filename, arduino_info):
+	sketchbook_root = arduino_info.getSketchbookRoot()
+	org_file_folder = os.path.split(filename)[0]
+
+	file_folder = org_file_folder
+	parent_folder = os.path.split(org_file_folder)[0]
+	in_sketchbook = True
+	while parent_folder != sketchbook_root:
+		if not os.path.sep in parent_folder:
+			in_sketchbook = False
+			break
+		file_folder = parent_folder
+		parent_folder = os.path.split(file_folder)[0]
+
+	if in_sketchbook:
+		sketch_path = file_folder
+	else:
+		sketch_path = findMainSketchPath(filename)
+	return sketch_path
+
 def genBuildFiles(prj_file, arduino_info, cur_lang, mode):
 	plugin_root = getPluginRoot()
 	template_dir = os.path.join(plugin_root, 'template')
 
-	prj_folder = os.path.split(prj_file)[0]
-	prj_filename = os.path.split(prj_file)[1]
-	prj_name = os.path.splitext(prj_filename)[0]
+	sketch_path = getSketchPath(prj_file, arduino_info)
+	sketch_name = os.path.split(sketch_path)[1]
+
+	# prj_folder = os.path.split(prj_file)[0]
+	# prj_filename = os.path.split(prj_file)[1]
+	# prj_name = os.path.splitext(prj_filename)[0]
+
+	prj_folder = sketch_path
+	prj_name = sketch_name
+
+	src_ext_list = ['.c', '.cpp', '.ino', '.pde']
+	prj_src_list = findSrcFiles(src_ext_list, prj_folder, is_sketch = True)
+	
+	main_src_number = 0
+	main_src = ''
+	for prj_src in prj_src_list:
+		prj_src_path = prj_src.replace('./', prj_folder + os.path.sep)
+		prj_src_path = prj_src_path.replace('/', os.path.sep)
+		if isMainSrc(prj_src_path):
+			main_src_number += 1
+			main_src = prj_src
+	if main_src_number != 1:
+		return (main_src_number, prj_folder)
+	prj_src_list.remove(main_src)
+	main_src_name = os.path.split(main_src)[1]
+	main_src_path = main_src.replace('./', prj_folder + os.path.sep)
 
 	build_dir = './build'
 	build_path = os.path.join(prj_folder, build_dir)
-	main_filename = '%s.cpp' % prj_name
+	main_filename = '%s.cpp' % main_src_name
 	main_file = build_dir + '/' + main_filename
 	main_file_path = os.path.join(build_path, main_filename)
 	core_ar_file = 'core.a'
@@ -647,17 +882,18 @@ def genBuildFiles(prj_file, arduino_info, cur_lang, mode):
 	if os.path.isfile(main_file_path):
 		os.remove(main_file_path)
 
-	genMainFile(prj_file, main_file_path)
+	genMainFile(main_src_path, main_file_path, arduino_info)
 
 	Setting = sublime.load_settings('Stino.sublime-settings')
 	arduino_root = Setting.get('Arduino_root')
+	if sys.platform == 'darwin':
+		arduino_root = os.path.join(arduino_root, 'Contents/Resources/JAVA')
 	board = Setting.get('board')
 	processor = Setting.get('processor', '')
 	programmer = Setting.get('programmer', '')
 	serial_port = Setting.get('serial_port', '')
 
 	full_compilation = Setting.get('full_compilation')
-	verbose_compilation = Setting.get('verbose_compilation')
 	verbose_upload = Setting.get('verbose_upload')
 	verify_code = Setting.get('verify_code')
 
@@ -705,25 +941,31 @@ def genBuildFiles(prj_file, arduino_info, cur_lang, mode):
 	compile_info['archive_file'] = core_ar_file
 	compile_info['software'] = 'ARDUINO'
 	compile_info['runtime_ide_version'] = str(int(arduino_info.getVersion()))
-	
+
 	(compile_info, key_list) = genCompileInfo(info_block, compile_info)
 	dict_key_list += key_list
 	(compile_info, key_list) = genPlatformInfo(platform_block, compile_info)
 	dict_key_list += key_list
 
-	variants_dir = os.path.join(board_dir_path, 'variants')
-	variant_dir = os.path.join(variants_dir, compile_info['build_variant'])
-	variant_dir = variant_dir.replace(os.path.sep, '/')
 	core_dir = os.path.join(core_root, 'cores')
 	build_core = compile_info['build_core']
 	if ':' in build_core:
 		build_core = build_core.split(':')[-1].strip()
 	core_source_dir = os.path.join(core_dir, build_core)
 	core_source_dir = core_source_dir.replace(os.path.sep, '/')
-	includes_paths = [core_source_dir, variant_dir] + ext_lib_paths
+
+	variants_dir = os.path.join(board_dir_path, 'variants')
+	if 'build_variant' in compile_info:
+		variant_dir = os.path.join(variants_dir, compile_info['build_variant'])
+		variant_dir = variant_dir.replace(os.path.sep, '/')
+	else:
+		variant_dir = core_source_dir
+
+	if variant_dir == core_source_dir:
+		includes_paths = [core_source_dir] + ext_lib_paths
+	else:
+		includes_paths = [core_source_dir, variant_dir] + ext_lib_paths
 	
-	src_ext_list = ['.c', '.cpp']
-	prj_src_list = findSrcFiles(src_ext_list, prj_folder, is_sketch = True)
 	core_src_folder_list = [core_source_dir] + ext_lib_paths
 	core_src_list = []
 	for core_src_folder in core_src_folder_list:
@@ -775,7 +1017,6 @@ def genBuildFiles(prj_file, arduino_info, cur_lang, mode):
 			compile_info['config_path'] = '/etc/avrdude.conf'
 		# compile_info['config_path'] = compile_info['config_path'].replace(' ', '\\ ')
 	
-	
 	if not main_file in prj_src_list:
 		prj_src_list.append(main_file)
 	core_src_list = [src.replace(' ', '\\ ') for src in core_src_list]
@@ -814,10 +1055,10 @@ def genBuildFiles(prj_file, arduino_info, cur_lang, mode):
 		for core_src in core_src_list:
 			core_obj = src_obj_dict[core_src]
 			clean_cmd += ' "%s"' % core_obj
-	if verbose_compilation:
-		verbose_text = ''
-	else:
-		verbose_text = '@'
+	# if verbose_compilation:
+	# 	verbose_text = ''
+	# else:
+	# 	verbose_text = '@'
 
 ####
 	text = ''
@@ -829,39 +1070,39 @@ def genBuildFiles(prj_file, arduino_info, cur_lang, mode):
 
 	text += 'upload: build\n\t'
 	text += '@echo "%s %s..."\n\t' % ('%(Uploading)s', bin_path)
-	text += '%s%s\n\n' % (verbose_text, compile_info['upload_pattern'])
+	text += '%s\n\n' % compile_info['upload_pattern']
 
 	if 'program_pattern' in compile_info:
 		text += 'upload_using_programmer: build\n\t'
 		text += '@echo "%s %s %s %s..."\n\t' % ('%(Uploading)s', bin_path, '%(Using)s', programmer)
-		text += '%s%s\n\n' % (verbose_text, compile_info['program_pattern'])
+		text += '%s\n\n' % compile_info['program_pattern']
 
 	if 'erase_pattern' in compile_info:
 		text += 'burn_bootloader:\n\t'
 		text += '@echo "%(Burning_Bootloader)s..."\n\t'
-		text += '%s%s\n\t' % (verbose_text, compile_info['erase_pattern'])
-		text += '%s%s\n\n' % (verbose_text, compile_info['bootloader_pattern'])
+		text += '%s\n\t' % compile_info['erase_pattern']
+		text += '%s\n\n' % compile_info['bootloader_pattern']
 
 	text += 'size: %s\n\t' % size_path
-	text += '@echo "%s %s:"\n\t' % ('%(Size_Information_Of)s', size_path)
-	text += '%s%s\n\t' % (verbose_text, compile_info['recipe_size_pattern'])
-	text += '@echo %s: %s %s.\n\n' % ('%(Maximum_Size)s', compile_info['upload_maximum_size'], '%(bytes)s')
+	# text += '@echo "%s %s:"\n\t' % ('%(Size_Information_Of)s', size_path)
+	text += '%s\n\n' % compile_info['recipe_size_pattern']
+	# text += '@echo %s: %s %s.\n\n' % ('%(Maximum_Size)s', compile_info['upload_maximum_size'], '%(bytes)s')
 
 	text += 'clean:\n\t'
 	text += '@echo "%(Cleaning)s..."\n\t'
-	text += '%s%s\n\n' % (verbose_text, clean_cmd)
+	text += '%s\n\n' % clean_cmd
 
 	if eep_path:
 		text += '%s: %s %s\n\t' % (bin_path, elf_path, eep_path)
 	else:
 		text += '%s: %s\n\t' % (bin_path, elf_path)
 	text += '@echo "%s %s..."\n\t' % ('%(Creating)s', bin_path)
-	text += '%s%s\n\n' % (verbose_text, compile_info['recipe_objcopy_hex_pattern'])
+	text += '%s\n\n' % compile_info['recipe_objcopy_hex_pattern']
 
 	if eep_path:
 		text += '%s: %s\n\t' % (eep_path, elf_path)
 		text += '@echo "%s %s..."\n\t' % ('%(Creating)s', eep_path)
-		text += '%s%s\n\n' % (verbose_text, compile_info['recipe_objcopy_eep_pattern'])
+		text += '%s\n\n' % compile_info['recipe_objcopy_eep_pattern']
 
 	text += '%s:' % elf_path
 	text += ' %s' % core_ar_path
@@ -876,7 +1117,7 @@ def genBuildFiles(prj_file, arduino_info, cur_lang, mode):
 		prj_obj = src_obj_dict[prj_src]
 		prj_obj_list_text += ' "%s"' % prj_obj
 	cmd_text = compile_info['recipe_c_combine_pattern'].replace('$@', prj_obj_list_text)
-	text += '%s%s\n\n' % (verbose_text, cmd_text)
+	text += '%s\n\n' % cmd_text
 
 	text += '%s:' % core_ar_path
 	for core_src in core_src_list:
@@ -890,7 +1131,7 @@ def genBuildFiles(prj_file, arduino_info, cur_lang, mode):
 		core_obj = src_obj_dict[core_src]
 		core_obj_list_text += ' "%s"' % core_obj
 	cmd_text = compile_info['recipe_ar_pattern'].replace('"$@"', core_obj_list_text)
-	text += '%s%s\n\n' % (verbose_text, cmd_text)
+	text += '%s\n\n' % cmd_text
 
 	for src in src_list:
 		ext = os.path.splitext(src)[1]
@@ -898,9 +1139,15 @@ def genBuildFiles(prj_file, arduino_info, cur_lang, mode):
 			cmd_text = compile_info['recipe_c_o_pattern']
 		elif ext == '.cpp':
 			cmd_text = compile_info['recipe_cpp_o_pattern']
+		elif ext == '.ino' or ext == '.pde':
+			cmd_text = compile_info['recipe_cpp_o_pattern']
+			index = cmd_text.index('"-I')
+			line_before = cmd_text[:index]
+			line_after = cmd_text[index:]
+			cmd_text = line_before + '-x c++ ' + line_after
 		text += '%s: %s\n\t' % (src_obj_dict[src], src)
 		text += '@echo "%s %s..."\n\t' % ('%(Creating)s', src_obj_dict[src])
-		text += '%s%s\n\n' % (verbose_text, cmd_text)
+		text += '%s\n\n' % cmd_text
 	new_text = text % cur_lang.getDisplayTextDict()
 	file_name = 'makefile'
 	file_path = os.path.join(prj_folder, file_name)
@@ -912,6 +1159,14 @@ def genBuildFiles(prj_file, arduino_info, cur_lang, mode):
 	if not compile_info['uploader_root'] in path_list:
 		path_list.append(compile_info['uploader_root'])
 	genScriptFile(prj_folder, path_list, mode)
+
+	regex = compile_info['recipe_size_regex']
+	upload_maximum_size = compile_info['upload_maximum_size']
+	if 'cmd_path' in compile_info:
+		uploader = compile_info['cmd_path']
+	else:
+		uploader = compile_info['cmd']
+	return (main_src_number, prj_folder, regex, upload_maximum_size, uploader)
 
 def formatCPP(org_text, level = 0):
 	patern = re.compile(r'for\s*?\([\S\s]+?\)')
@@ -975,6 +1230,11 @@ def formatCPP(org_text, level = 0):
 			index_after = org_text.index('"')
 		line_middle += org_text[:index_after+1]
 		line_after = org_text[index_after+1:]
+
+		if '#' in line_before.split('\n')[-1]:
+			index = line_after.index('\n')
+			line_after = line_after[:index] + '%(auto_format_line_break)s' + line_after[index+1:]
+
 		(text_before, level) = formatCPP(line_before, level)
 		(text_after, level) = formatCPP(line_after, level)
 		text_middle = line_middle
@@ -989,31 +1249,63 @@ def formatCPP(org_text, level = 0):
 		index_before = org_text.index(sep)
 		index_after = index_before + length
 		line_before = org_text[:index_before]
-		line_middle = sep
 		line_after = org_text[index_after:]
 		(text_before, level) = formatCPP(line_before, level)
-		text_middle = '\t' * level
-		text_middle += '%s\n' % sep
 		(text_after, level) = formatCPP(line_after, level)
+		pattern = re.compile(r'\S+')
+		letter_list = pattern.findall(sep)
+		sep = ''
+		for letter in letter_list:
+			if letter[0] == '(':
+				sep = sep[:-1] + letter
+			else:
+				sep += letter
+			sep += ' '
+		sep = sep[:-1]
+		if text_after.strip()[0] != '{':
+			sep += '\n\t'
+		text_middle = '\t' * level
+		text_middle += sep
 		text = text_before + text_middle + text_after
 	else:
+		text = ''
+		lines = org_text.split('\n')
+		for line in lines:
+			line = line.strip()
+			if line:
+				text += line
+				text += ' '
+		org_text = text
 		text = ''
 		pattern = re.compile(r'\S+')
 		org_text = org_text.replace('{', '\n{\n')
 		org_text = org_text.replace('}', '\n}\n')
 		org_text = org_text.replace(';', ';\n')
 		org_text = org_text.replace('#', '\n#')
+		org_text = org_text.replace('(', ' (')
 		lines = org_text.split('\n')
 		for line in lines:
 			line = line.strip()
 			if line:
 				if '}' in line:
 					level -= 1
+				if '{' in line:
+					text += '\n'
 				text += '\t' * level
 				letter_list = pattern.findall(line)
-				for letter in letter_list[:-1]:
-					text += '%s ' % letter
-				text += '%s\n' % letter_list[-1]
+				for letter in letter_list:
+					if letter[0] == '(':
+						text = text[:-1] + '%s ' % letter
+					elif letter == ';':
+						if len(letter_list) == 1:
+							text += '%s ' % letter
+						else:
+							text = text[:-1] + '%s ' % letter
+					else:
+						text += '%s ' % letter
+				if ';' in line or '#' in line or '{' in line or '}' in line:
+					text = text[:-1]
+					text += '\n'
 				if letter_list[-1] == '}':
 					text += '\n'
 				if '{' in line:
@@ -1024,5 +1316,6 @@ def autoFormat(view):
 	edit = view.begin_edit()
 	org_text = view.substr(sublime.Region(0, view.size()))
 	(text, level) = formatCPP(org_text)
+	text = text.replace('%(auto_format_line_break)s ', '\n')
 	view.replace(edit, sublime.Region(0, view.size()), text)
 	view.end_edit(edit)

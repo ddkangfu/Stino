@@ -1,11 +1,12 @@
 #-*- coding: utf-8 -*-
 
 import sublime, sublime_plugin
-import os, zipfile, re
+import os, zipfile, re, sys
 from stino import stmenu, lang, utils, arduino
 import threading
 import time
 import serial
+import shutil
 
 ##
 Setting_File = 'Stino.sublime-settings'
@@ -285,21 +286,24 @@ class ShowSketchFolderCommand(sublime_plugin.WindowCommand):
 
 class CompileSketchCommand(sublime_plugin.WindowCommand):
 	def run(self):
-		utils.runBuild(self.window, arduino_info, cur_lang)
-		Settings.set('full_compilation', False)
-		sublime.save_settings(Setting_File)
+		state = utils.runBuild(self.window, arduino_info, cur_lang)
+		if state:
+			Settings.set('full_compilation', False)
+			sublime.save_settings(Setting_File)
 
 class UploadBinaryCommand(sublime_plugin.WindowCommand):
 	def run(self):
-		utils.runBuild(self.window, arduino_info, cur_lang, mode = 'upload')
-		Settings.set('full_compilation', False)
-		sublime.save_settings(Setting_File)
+		state = utils.runBuild(self.window, arduino_info, cur_lang, mode = 'upload')
+		if state:
+			Settings.set('full_compilation', False)
+			sublime.save_settings(Setting_File)
 
 class UploadUsingProgrammerCommand(sublime_plugin.WindowCommand):
 	def run(self):
-		utils.runBuild(self.window, arduino_info, cur_lang, mode = 'upload_using_programmer')
-		Settings.set('full_compilation', False)
-		sublime.save_settings(Setting_File)
+		state = utils.runBuild(self.window, arduino_info, cur_lang, mode = 'upload_using_programmer')
+		if state:
+			Settings.set('full_compilation', False)
+			sublime.save_settings(Setting_File)
 
 	def is_enabled(self):
 		state = arduino_info.hasProgrammer()
@@ -414,12 +418,15 @@ class SelectArduinoFolderCommand(sublime_plugin.WindowCommand):
 
 		sel_path = self.path_list[index]
 		if arduino.isArduinoFolder(sel_path):
-			(ver_text, ver) = arduino.genVersion(sel_path)
+			real_path = sel_path
+			if sys.platform == 'darwin':
+				real_path = os.path.join(sel_path, 'Contents/Resources/JAVA')
+			(ver_text, ver) = arduino.genVersion(real_path)
 			text = '%s: %s\n%s: %s' % ('%(Arduino)s', sel_path, '%(Version)s', ver_text)
 			msg = text % cur_lang.getDisplayTextDict()
 			sublime.message_dialog(msg)
 
-			if ver < 100 or ver == 150:
+			if ver < 10:
 				text = '%(Version_Not_Supported)s'
 				msg = text % cur_lang.getDisplayTextDict()
 				sublime.message_dialog(msg)
@@ -746,20 +753,57 @@ class SelectExampleCommand(sublime_plugin.WindowCommand):
 	def run(self, menu_str):
 		example = menu_str
 		example_path = arduino_info.getExampleFolder(example)
-		file_list = utils.listDir(example_path)
-
-		self.level = 0
-		self.top_path_list = [os.path.join(example_path, cur_file) for cur_file in file_list]
-		self.path_list = self.top_path_list
-		self.window.show_quick_panel(file_list, self.on_done)
+		
+		if arduino.isSketchFolder(example_path):
+			example_name = os.path.split(example_path)[1]
+			sketchbook_root = arduino_info.getSketchbookRoot()
+			new_path = os.path.join(sketchbook_root, example_name)
+			if os.path.exists(new_path):
+				org_msg = '%(Sketch_Exists)s'
+				msg = org_msg % cur_lang.getDisplayTextDict()
+				sublime.message_dialog(msg)
+				version = arduino_info.getVersion()
+				if version >= 100:
+					example_file = example_name + '.ino'
+				else:
+					example_file = example_name + '.pde'
+				file_path = os.path.join(example_path, example_file)
+				view = self.window.open_file(file_path)
+			else:
+				shutil.copytree(example_path, new_path, True)
+				cur_menu.sketchbookUpdate()
+				utils.openSketch(new_path)
+		else:
+			file_list = utils.listDir(example_path)
+			self.level = 0
+			self.top_path_list = [os.path.join(example_path, cur_file) for cur_file in file_list]
+			self.path_list = self.top_path_list
+			self.window.show_quick_panel(file_list, self.on_done)
 
 	def on_done(self, index):
 		if index == -1:
 			return
 
 		sel_path = self.path_list[index]
-		if os.path.isfile(sel_path):
-			view = self.window.open_file(sel_path)
+		if arduino.isSketchFolder(sel_path):
+			example_name = os.path.split(sel_path)[1]
+			sketchbook_root = arduino_info.getSketchbookRoot()
+			new_path = os.path.join(sketchbook_root, example_name)
+			if os.path.exists(new_path):
+				org_msg = '%(Sketch_Exists)s'
+				msg = org_msg % cur_lang.getDisplayTextDict()
+				sublime.message_dialog(msg)
+				version = arduino_info.getVersion()
+				if version >= 100:
+					example_file = example_name + '.ino'
+				else:
+					example_file = example_name + '.pde'
+				file_path = os.path.join(sel_path, example_file)
+				view = self.window.open_file(file_path)
+			else:
+				shutil.copytree(sel_path, new_path, True)
+				cur_menu.sketchbookUpdate()
+				utils.openSketch(new_path)
 		else:
 			(self.level, self.path_list) = utils.enterNext(index, self.level, self.top_path_list, sel_path)
 			file_list = utils.getFileList(self.path_list)

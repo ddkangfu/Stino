@@ -8,6 +8,8 @@ if sys.platform == 'win32':
 
 def isArduinoFolder(path):
 	state = False
+	if sys.platform == 'darwin':
+		path = os.path.join(path, 'Contents/Resources/JAVA')
 	if path and os.path.exists(path):
 		hardware_path = os.path.join(path, 'hardware')
 		lib_path = os.path.join(path, 'lib')
@@ -24,9 +26,10 @@ def isArduinoFolder(path):
 def isCoreFolder(path):
 	state = False
 	if os.path.exists(path):
+		cores_path = os.path.join(path, 'cores')
 		variants_path = os.path.join(path, 'variants')
 		boards_file = os.path.join(path, 'boards.txt')
-		if os.path.isdir(variants_path) and os.path.isfile(boards_file):
+		if os.path.isdir(variants_path) or os.path.isfile(boards_file) or os.path.isdir(cores_path):
 			state = True
 	return state
 
@@ -123,22 +126,47 @@ def getBoardList(path):
 	processors_of_board = {}
 	info_file = os.path.join(path, 'boards.txt')
 	if os.path.isfile(info_file):
+		text = utils.readFile(info_file)
 		blocks = utils.readFile(info_file, mode = 'blocks')
-		for block in blocks:
-			if block:
-				line = block[0]
-				(key, board) = utils.getKeyValue(line)
-				board_list.append(board)
-
+		if '.container=' in text:
+			for block in blocks:
 				processor_list = []
-				processor_blocks = utils.getBlocks(block, sep = '## ')
-				for processor_block in processor_blocks:
-					if processor_block:
-						processor_line = processor_block[0]
-						(key, processor) = utils.getKeyValue(processor_line)
-						processor_list.append(processor)
-				processors_of_board[board] = processor_list
-				board_file_dict[board] = info_file
+				has_processor = False
+				for line in block:
+					if '.name=' in line:
+						(key, board) = utils.getKeyValue(line)
+					if '.container=' in line:
+						(key, board) = utils.getKeyValue(line)
+						has_processor = True
+						break
+					if '.cpu=' in line:
+						(key, cpu) = utils.getKeyValue(line)
+				if not has_processor:
+					board_list.append(board)
+					board_file_dict[board] = info_file
+					processors_of_board[board] = processor_list
+				else:
+					if not board in board_list:
+						board_list.append(board)
+						board_file_dict[board] = info_file
+						processors_of_board[board] = processor_list
+					processors_of_board[board].append(cpu)
+		else:
+			for block in blocks:
+				if block:
+					line = block[0]
+					(key, board) = utils.getKeyValue(line)
+					board_list.append(board)
+
+					processor_list = []
+					processor_blocks = utils.getBlocks(block, sep = '## ')
+					for processor_block in processor_blocks:
+						if processor_block:
+							processor_line = processor_block[0]
+							(key, processor) = utils.getKeyValue(processor_line)
+							processor_list.append(processor)
+					processors_of_board[board] = processor_list
+					board_file_dict[board] = info_file
 	return (board_list, board_file_dict, processors_of_board)
 
 def getKeywordList(path):
@@ -228,6 +256,8 @@ class ArduinoInfo:
 		self.arduino_root = self.Settings.get('Arduino_root')
 		if not isArduinoFolder(self.arduino_root):
 			return
+		if sys.platform == 'darwin':
+			self.arduino_root = os.path.join(self.arduino_root, 'Contents/Resources/JAVA')
 		(self.version_txt, self.version) = genVersion(self.arduino_root)
 		self.sketchbookUpdate()
 		self.genBoardList()
