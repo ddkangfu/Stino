@@ -663,7 +663,7 @@ class SerialMonitorCommand(sublime_plugin.WindowCommand):
 			number = ser.inWaiting()
 			if number > 0:
 				self.in_text += ser.read(number)
-			# time.sleep(0.0001)
+			time.sleep(0.001)
 		ser.close()
 		opened_serial_list.remove(self.serial_port)
 		opened_serial_id_dict[self.serial_port] = None
