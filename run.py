@@ -684,7 +684,7 @@ class SerialMonitorCommand(sublime_plugin.WindowCommand):
 	def update(self):
 		view_edit = self.view.begin_edit()			
 		self.show_text= self.show_text.replace('\r', '')
-		if self.view.size() > 10000:
+		if self.view.size() > 65535:
 			region = sublime.Region(0, self.view.size())
 			self.view.replace(view_edit, region, '')
 		self.view.insert(view_edit, self.view.size(), self.show_text)
