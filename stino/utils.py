@@ -371,7 +371,8 @@ class runCompile:
 			line = line.strip()
 			if line:
 				if '...' in line or 'warning:' in line or 'error:' in line or 'No device' in line \
-					or 'make:' in line or self.uploader in line or ': In ' in line:
+					or 'make:' in line or self.uploader in line or ': In ' in line or 'wrong' in line \
+					or 'exit' in line:
 					show_output = True
 				elif self.done_text in line:
 					line = self.size_line + line
@@ -851,7 +852,7 @@ def genBuildFiles(prj_file, arduino_info, cur_lang, mode):
 	prj_folder = sketch_path
 	prj_name = sketch_name
 
-	src_ext_list = ['.c', '.cpp', '.ino', '.pde']
+	src_ext_list = ['.c', '.cpp', '.ino', '.pde', '.cc']
 	prj_src_list = findSrcFiles(src_ext_list, prj_folder, is_sketch = True)
 	
 	main_src_number = 0
@@ -1135,7 +1136,7 @@ def genBuildFiles(prj_file, arduino_info, cur_lang, mode):
 
 	for src in src_list:
 		ext = os.path.splitext(src)[1]
-		if ext == '.c':
+		if ext == '.c' or ext == '.cc':
 			cmd_text = compile_info['recipe_c_o_pattern']
 		elif ext == '.cpp':
 			cmd_text = compile_info['recipe_cpp_o_pattern']
