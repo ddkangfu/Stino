@@ -6,7 +6,7 @@ import re
 import serial
 import subprocess
 import threading
-import time
+import time, datetime
 
 if sys.platform == 'win32':
 	import _winreg
@@ -321,7 +321,7 @@ class runCompile:
 		self.Settings = sublime.load_settings('Stino.sublime-settings')
 		self.output_text = ''
 		self.show_text = ''
-		self.done_text = '[Arduino - Make process has completed.]'
+		self.done_text = '[Arduino - Make process has finished in {1}s.]'
 		self.pattern = re.compile(regex)
 		self.upload_maximum_size = formatNumber(upload_maximum_size)
 		self.size_line = ''
@@ -342,6 +342,7 @@ class runCompile:
 			cmd = 'build.bat'
 		else:
 			cmd = './build.sh'
+		starttime = datetime.datetime.now()
 		self.process = subprocess.Popen(cmd, stdout = subprocess.PIPE, stderr = subprocess.STDOUT, bufsize = 1, shell = True)
 		while self.process.poll() == None:
 			line = self.process.stdout.readline()
@@ -349,6 +350,8 @@ class runCompile:
 				text = line.decode(encoding, 'replace')
 				self.output_text += text
 		self.output_text += self.done_text
+		endtime = datetime.datetime.now()
+		self.interval=(endtime - starttime).seconds
 
 	def display(self):
 		while True:
@@ -359,8 +362,8 @@ class runCompile:
 			if self.show_text:
 				self.output_text = self.output_text.replace(self.show_text, '')
 				sublime.set_timeout(self.update, 0)
-			time.sleep(0.1)
-		print self.error_text
+			time.sleep(0.05)
+		
 
 	def update(self):
 		edit = self.panel.begin_edit()
@@ -376,6 +379,7 @@ class runCompile:
 					show_output = True
 				elif self.done_text in line:
 					line = self.size_line + line
+					line = line.replace('{1}', str(self.interval))
 					show_output = True
 				else:
 					if verbose_compilation:
