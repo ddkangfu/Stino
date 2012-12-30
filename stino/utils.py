@@ -329,6 +329,7 @@ class runCompile:
 		if sys.platform == 'win32':
 			self.uploader += '.exe'
 		self.uploader += ':'
+		self.interval = 0
 
 	def run(self):
 		thread_compile = threading.Thread(target=self.compile)
@@ -351,7 +352,7 @@ class runCompile:
 				self.output_text += text
 		self.output_text += self.done_text
 		endtime = datetime.datetime.now()
-		self.interval=(endtime - starttime).seconds
+		self.interval = (endtime - starttime).seconds
 
 	def display(self):
 		while True:
