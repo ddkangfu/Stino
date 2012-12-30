@@ -644,6 +644,7 @@ class SerialMonitorCommand(sublime_plugin.WindowCommand):
 		listener_thread = threading.Thread(target = self.startMonitor)
 		display_thread = threading.Thread(target = self.display)
 		listener_thread.start()
+		time.sleep(0.1)
 		display_thread.start()
 
 	def startMonitor(self):
@@ -662,7 +663,7 @@ class SerialMonitorCommand(sublime_plugin.WindowCommand):
 			number = ser.inWaiting()
 			if number > 0:
 				self.in_text += ser.read(number)
-			# time.sleep(0.001)
+			# time.sleep(0.0001)
 		ser.close()
 		opened_serial_list.remove(self.serial_port)
 		opened_serial_id_dict[self.serial_port] = None
@@ -683,6 +684,9 @@ class SerialMonitorCommand(sublime_plugin.WindowCommand):
 	def update(self):
 		view_edit = self.view.begin_edit()			
 		self.show_text= self.show_text.replace('\r', '')
+		if self.view.size() > 10000:
+			region = sublime.Region(0, self.view.size())
+			self.view.replace(view_edit, region, '')
 		self.view.insert(view_edit, self.view.size(), self.show_text)
 		self.view.end_edit(view_edit)
 		self.view.show(self.view.size())
