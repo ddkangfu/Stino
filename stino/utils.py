@@ -356,14 +356,15 @@ class runCompile:
 
 	def display(self):
 		while True:
-			last_line = self.show_text.split('\n')[-1]
-			if last_line == self.done_text:
-				break
 			self.show_text = self.output_text
 			if self.show_text:
-				self.output_text = self.output_text.replace(self.show_text, '')
+				index = len(self.show_text)
+				self.output_text = self.output_text[index:]
 				sublime.set_timeout(self.update, 0)
-			time.sleep(0.05)
+				last_line = self.show_text.split('\n')[-1]
+				if last_line == self.done_text:
+					break
+			time.sleep(0.1)
 		
 
 	def update(self):

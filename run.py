@@ -117,7 +117,8 @@ class SketchListener(sublime_plugin.EventListener):
 		global serial_monitor_state_dict
 		if 'Serial Monitor' in view.name():
 			serial_port = view.name().split('-')[1].strip()
-			serial_monitor_state_dict[serial_port] = False
+			if serial_port in serial_monitor_state_dict:
+				serial_monitor_state_dict[serial_port] = False
 		if view.id() in self.new_view_list:
 			self.new_view_list.remove(view.id())
 
@@ -638,9 +639,12 @@ class SerialMonitorCommand(sublime_plugin.WindowCommand):
 		opened_serial_list.append(self.serial_port)
 		self.window.run_command('serial_send')
 
-		self.text_to_add = ''
-		t = threading.Thread(target = self.startMonitor)
-		t.start()
+		self.in_text = ''
+		self.show_text = ''
+		listener_thread = threading.Thread(target = self.startMonitor)
+		display_thread = threading.Thread(target = self.display)
+		listener_thread.start()
+		display_thread.start()
 
 	def startMonitor(self):
 		global opened_serial_list
@@ -656,26 +660,32 @@ class SerialMonitorCommand(sublime_plugin.WindowCommand):
 		serial_monitor_state_dict[self.serial_port] = True
 		while serial_monitor_state_dict[self.serial_port]:
 			number = ser.inWaiting()
-			text = ser.read(number)
-			self.text_to_add += text
-			sublime.set_timeout(self.update, 0)
-			time.sleep(0.1)
+			if number > 0:
+				self.in_text += ser.read(number)
+			# time.sleep(0.001)
 		ser.close()
 		opened_serial_list.remove(self.serial_port)
 		opened_serial_id_dict[self.serial_port] = None
 
+	def display(self):
+		global serial_monitor_state_dict
+		while True:
+			if self.serial_port in serial_monitor_state_dict:
+				if not serial_monitor_state_dict[self.serial_port]:
+					break
+			self.show_text = self.in_text
+			if self.show_text:
+				index = len(self.show_text)
+				self.in_text = self.in_text[index:]
+				sublime.set_timeout(self.update, 0)
+			time.sleep(0.1)
+
 	def update(self):
-		if len(self.text_to_add):
-			if self.view.size() > 10000:
-				view_edit = self.view.begin_edit()
-				self.view.replace(view_edit, self.view.size(), '')
-				self.view.end_edit(view_edit)
-			view_edit = self.view.begin_edit()
-			self.text_to_add= self.text_to_add.replace('\r', '')
-			self.view.insert(view_edit, self.view.size(), self.text_to_add)
-			self.view.end_edit(view_edit)
-			self.view.show(self.view.size())
-			self.text_to_add = ''
+		view_edit = self.view.begin_edit()			
+		self.show_text= self.show_text.replace('\r', '')
+		self.view.insert(view_edit, self.view.size(), self.show_text)
+		self.view.end_edit(view_edit)
+		self.view.show(self.view.size())
 
 	def is_enabled(self):
 		state = False
@@ -711,10 +721,16 @@ class SerialSendCommand(sublime_plugin.WindowCommand):
 				if input_text:
 					ser = opened_serial_id_dict[serial_port]
 					ser.write(input_text.encode('utf-8'))
-					text = '\n%s: %s\n' % ('%(Send)s', input_text)
-					display_text = text % cur_lang.getDisplayTextDict()
 					view = self.window.active_view()
 					edit = view.begin_edit()
+					region = sublime.Region(view.size()-1, view.size())
+					letter = view.substr(region)
+					if letter != '\n':
+						text = '\n'
+					else:
+						text = ''
+					text += '%s: %s\n' % ('%(Send)s', input_text)
+					display_text = text % cur_lang.getDisplayTextDict()
 					view.insert(edit, view.size(), display_text)
 					view.end_edit(edit)
 					view.show(view.size())
