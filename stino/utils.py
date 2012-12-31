@@ -858,7 +858,7 @@ def genBuildFiles(prj_file, arduino_info, cur_lang, mode):
 	prj_folder = sketch_path
 	prj_name = sketch_name
 
-	src_ext_list = ['.c', '.cpp', '.ino', '.pde', '.cc']
+	src_ext_list = ['.c', '.cpp', '.ino', '.pde', '.cc', '.cxx']
 	prj_src_list = findSrcFiles(src_ext_list, prj_folder, is_sketch = True)
 	
 	main_src_number = 0
@@ -1144,7 +1144,7 @@ def genBuildFiles(prj_file, arduino_info, cur_lang, mode):
 		ext = os.path.splitext(src)[1]
 		if ext == '.c' or ext == '.cc':
 			cmd_text = compile_info['recipe_c_o_pattern']
-		elif ext == '.cpp':
+		elif ext == '.cpp' or ext == '.cxx':
 			cmd_text = compile_info['recipe_cpp_o_pattern']
 		elif ext == '.ino' or ext == '.pde':
 			cmd_text = compile_info['recipe_cpp_o_pattern']
