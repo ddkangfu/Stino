@@ -194,7 +194,7 @@ def getSerialPortList():
 			pass
 
 		if has_ports:
-			for i in xrange(64):
+			for i in xrange(128):
 				try:
 					name,value,type = _winreg.EnumValue(reg,i)
 					serial_port_list.append(value)
@@ -611,6 +611,8 @@ def findSrcFiles(ext_list, path, is_sketch = False):
 		if is_sketch:
 			if build_path in cur_path:
 				continue
+		if 'examples' in cur_path:
+			continue
 		for f in files:
 			cur_ext = os.path.splitext(f)[1]
 			if cur_ext in ext_list:
