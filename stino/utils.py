@@ -341,6 +341,8 @@ class runCompile:
 
 	def compile(self):
 		encoding = codecs.lookup(locale.getpreferredencoding()).name
+		if sys.platform == 'darwin':
+			encoding = 'utf-8'
 		if sys.platform == 'win32':
 			cmd = 'build.bat'
 		else:
