@@ -520,6 +520,10 @@ def genCompileInfo(info_block, compile_info):
 		if not key in compile_info:
 			compile_info[key] = value
 			dict_key_list.append(key)
+	if 'build_vid' in compile_info:
+		if not 'build_extra_flags' in compile_info:
+			compile_info['build_extra_flags'] = '-DUSB_VID={build.vid} -DUSB_PID={build.pid}'
+			dict_key_list.append('build_extra_flags')
 	return (compile_info, dict_key_list)
 
 def genPlatformInfo(platform_block, compile_info):
